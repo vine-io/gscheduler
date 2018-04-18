@@ -1,5 +1,4 @@
 # gscheduler
-<<<<<<< HEAD
 
 ## 简介
 gscheduler 是`golang`实现的一个简单的任务调度器。
@@ -52,9 +51,4 @@ func main() {
 
 
   [1]: https://github.com/alex023/clock
-=======
-# 安装
-```bash
-$ go get "github.com/xingyys/gscheduler"
-```
->>>>>>> 95e21c959ceeb4fab7283cfdf280004081b96175
+
