@@ -12,18 +12,20 @@ func main() {
 	s.Start()
 
 	a := 1
-	j, _ := s.AddIntervalJob("job1", true, time.Second*1, func() {
+	s.AddIntervalJob("job1", true, time.Second*2, func() {
 		fmt.Printf("[%s] a = %d\n", time.Now(), a)
 		a++
 	})
 
-	s.AddIntervalJob("job2", true, time.Second*2, func() {
+	s.AddIntervalJob("job2", true, time.Second*1, func() {
 		println("job2")
 	})
 
-	time.Sleep(time.Second * 3)
-	_ = j
-	s.StopGraceful()
+	fmt.Println(s.GetJobs())
+
+	//time.Sleep(time.Second * 3)
+	//_ = j
+	//s.StopGraceful()
 
 	time.Sleep(time.Second * 4)
 }

@@ -13,7 +13,6 @@
 package gscheduler
 
 import (
-	"encoding/json"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -30,10 +29,6 @@ const (
 	Finished Status = "finished"
 )
 
-type JobMsg interface {
-	C() <-chan JobMsg
-}
-
 type Job struct {
 	id          uint64
 	name        string
@@ -45,11 +40,10 @@ type Job struct {
 	activeCount uint64       // 任务执行次数
 	activeMax   uint64       // 任务允许执行的最大次数，0为无限次
 	status      Status       // 任务状态
-	errorMsg    string       // 错误信息
+	err         error        // 错误信息
 	fn          func()       // 任务函数
-	msgChan     chan JobMsg  // 任务输出信息
 	cancelFlag  int32
-	scheduler   *Scheduler
+	store       Store
 }
 
 func (j *Job) Less(another rbtree.Item) bool {
@@ -75,52 +69,8 @@ func (j *Job) start(async bool) {
 // 删除任务
 func (j *Job) Cancel() {
 	if atomic.CompareAndSwapInt32(&j.cancelFlag, 0, 1) {
-		j.scheduler.rmJob(j)
-		j.innerCancel()
+		j.store.Del(j)
 	}
-}
-
-type Data struct {
-	Id   uint64
-	Name string
-}
-
-type jobDetails struct {
-	Id          uint64    `json:"id"`
-	Name        string    `json:"name"`
-	CreateTime  time.Time `json:"createTime"`
-	LastTime    time.Time `json:"lastTime"`
-	NextTime    time.Time `json:"nextTime"`
-	IsActive    bool      `json:"isActive"`
-	ActiveCount uint64    `json:"activeCount"`
-	ActiveMax   uint64    `json:"activeMax"`
-	Status      Status    `json:"status"`
-	ErrorMsg    string    `json:"errorMsg"`
-}
-
-func (j Job) Details() []byte {
-	jobdetails := &jobDetails{}
-	jobdetails.Id = j.id
-	jobdetails.Name = j.name
-	jobdetails.CreateTime = j.createTime
-	jobdetails.LastTime = j.lastTime
-	jobdetails.NextTime = j.nextTime
-	jobdetails.IsActive = j.isActive
-	jobdetails.ActiveCount = j.activeCount
-	jobdetails.ActiveMax = j.activeMax
-	jobdetails.Status = j.status
-	jobdetails.ErrorMsg = j.errorMsg
-	data, _ := json.Marshal(jobdetails)
-	return data
-}
-
-func (j *Job) C() <-chan JobMsg {
-	return j.msgChan
-}
-
-func (j *Job) innerCancel() {
-	j.scheduler = nil
-	close(j.msgChan)
 }
 
 func (j *Job) safeCall() {
@@ -128,7 +78,7 @@ func (j *Job) safeCall() {
 	defer func() {
 		j.status = Finished
 		if err := recover(); err != nil {
-			j.errorMsg = fmt.Sprintf("[%v] error: %v at %v", j.name, err, time.Now().Format("2006-01-02 15:04:05"))
+			j.err = fmt.Errorf("[%s] %s: %v", time.Now().Format("2006-01-02 15:04:05"), j.name, err)
 		}
 	}()
 	j.fn()

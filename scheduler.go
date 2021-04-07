@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/lack-io/gscheduler/cron"
-	"github.com/lack-io/gscheduler/rbtree"
 )
 
 const _UNTOUCHED = time.Duration(math.MaxInt64)
@@ -28,11 +27,12 @@ var (
 	defaultScheduler *Scheduler
 	oncedo           sync.Once
 	signal           = struct{}{}
+	staticJob        = "__staticJob"
 )
 
 type Scheduler struct {
 	seq         uint64
-	jobQueue    *rbtree.Rbtree
+	store       Store
 	count       uint64
 	waitJobsNum uint64
 	pauseChan   chan struct{}
@@ -51,7 +51,7 @@ func initScheduler() {
 
 func NewScheduler() *Scheduler {
 	s := &Scheduler{
-		jobQueue:   rbtree.New(),
+		store:      newJobStore(),
 		pauseChan:  make(chan struct{}),
 		resumeChan: make(chan struct{}),
 		exitChan:   make(chan struct{}),
@@ -69,7 +69,7 @@ func (s *Scheduler) Start() {
 		},
 	}
 
-	_, inserted := s.addJob("testJob", untouchedJob.cron.Next(now), true, untouchedJob.cron, 1, untouchedJob.fn)
+	_, inserted := s.addJob(staticJob, untouchedJob.cron.Next(now), true, untouchedJob.cron, 1, untouchedJob.fn)
 	if !inserted {
 		panic("[scheduler] internal error.Reason cannot insert job.")
 	}
@@ -89,7 +89,7 @@ func (s *Scheduler) run() {
 Pause:
 	<-s.resumeChan
 	for {
-		job, _ = s.jobQueue.Min().(*Job)
+		job, _ = s.store.Pop()
 
 		timeout = job.nextTime.Sub(time.Now())
 		timer.SafeReset(timeout)
@@ -101,17 +101,15 @@ Pause:
 			if job.isActive {
 				job.start(true)
 				if job.activeMax == 0 || job.activeMax > job.activeCount {
-					s.jobQueue.Delete(job)
 					job.lastTime = job.nextTime
 					job.nextTime = job.cron.Next(job.lastTime)
-					s.jobQueue.Insert(job)
+					s.store.Put(job)
 				} else {
 					s.removeJob(job)
 				}
 			} else {
-				s.jobQueue.Delete(job)
 				job.nextTime = job.cron.Next(job.lastTime)
-				s.jobQueue.Insert(job)
+				s.store.Put(job)
 			}
 		case <-s.pauseChan:
 			goto Pause
@@ -140,7 +138,7 @@ func (s *Scheduler) addJob(
 	active bool,
 	cron cron.Crontab,
 	activeMax uint64,
-	jobFunc func(),
+	fn func(),
 ) (job *Job, inserted bool) {
 	s.seq++
 	s.waitJobsNum++
@@ -154,24 +152,22 @@ func (s *Scheduler) addJob(
 		cron:       cron,
 		activeMax:  activeMax,
 		status:     Waiting,
-		fn:         jobFunc,
-		msgChan:    make(chan JobMsg, 1),
-		scheduler:  s,
+		fn:         fn,
+		store:      s.store,
 	}
-	s.jobQueue.Insert(job)
+	s.store.Put(job)
 	inserted = true
 	return
 }
 
 func (s *Scheduler) removeJob(job *Job) (removed bool) {
-	if s.jobQueue.Delete(job) != nil {
-		s.waitJobsNum--
+	s.store.Del(job)
+	s.waitJobsNum--
 
-		// job.Cancel --> rmJob -->removeJob; schedule -->removeJob
-		// it is call repeatly when Job.Cancel
-		if atomic.CompareAndSwapInt32(&job.cancelFlag, 0, 1) {
-			job.innerCancel()
-		}
+	// job.Cancel --> rmJob -->removeJob; schedule -->removeJob
+	// it is call repeatly when Job.Cancel
+	if atomic.CompareAndSwapInt32(&job.cancelFlag, 0, 1) {
+		//job.innerCancel()
 	}
 	return
 }
@@ -185,26 +181,17 @@ func (s *Scheduler) rmJob(job *Job) {
 }
 
 func (s *Scheduler) cleanJobs() {
-	item := s.jobQueue.Min()
+	item, _ := s.store.Pop()
 	for item != nil {
-		job, ok := item.(*Job)
-		if ok {
-			s.removeJob(job)
-		}
-		item = s.jobQueue.Min()
+		item, _ = s.store.Pop()
 	}
 }
 
 func (s *Scheduler) immediate() {
 	for {
-		if item := s.jobQueue.Min(); item != nil {
+		if item, _ := s.store.Pop(); item != nil {
 			atomic.AddUint64(&s.count, 1)
-
-			job := item.(*Job)
-			job.start(false)
-
-			s.removeJob(job)
-
+			item.start(false)
 		} else {
 			break
 		}
@@ -271,109 +258,110 @@ func (s *Scheduler) AddOnceJob(
 	return
 }
 
-// 添加多次执行任务
-func (s *Scheduler) AddTimesJob(
-	name string,
-	active bool,
-	interval time.Duration,
-	activeMax uint64,
-	jobFunc func(),
-) (job *Job, inserted bool) {
-	if jobFunc == nil || interval.Nanoseconds() <= 0 {
-		return
-	}
-	s.pause()
-	job, inserted = s.addJob(
-		name,
-		time.Now().Add(interval),
-		active,
-		cron.Every(interval),
-		activeMax,
-		jobFunc,
-	)
-	s.resume()
-	return
-}
-
-// 修改任务名
-func (s *Scheduler) UpdateJobName(jobmsg JobMsg, name string) (updated bool) {
-	if jobmsg == nil || name == "" {
-		return false
-	}
-	item, ok := jobmsg.(*Job)
-	if !ok {
-		return false
-	}
-	s.pause()
-	defer s.resume()
-
-	s.jobQueue.Delete(item)
-	item.name = name
-	s.jobQueue.Insert(item)
-	updated = true
-
-	return
-}
-
-// 修改任务运行状态
-func (s *Scheduler) UpdateJobActive(jobmsg JobMsg, active bool) (updated bool) {
-	if jobmsg == nil {
-		return false
-	}
-	item, ok := jobmsg.(*Job)
-	if !ok {
-		return false
-	}
-	s.pause()
-	defer s.resume()
-
-	s.jobQueue.Delete(item)
-	item.isActive = active
-	s.jobQueue.Insert(item)
-	updated = true
-	return
-}
-
-// 修改任务时间间隔
-func (s *Scheduler) UpdateJobInterval(jobmsg JobMsg, interval time.Duration) (updated bool) {
-	if jobmsg == nil || interval.Nanoseconds() <= 0 {
-		return false
-	}
-	item, ok := jobmsg.(*Job)
-	if !ok {
-		return false
-	}
-	s.pause()
-	defer s.resume()
-
-	s.jobQueue.Delete(item)
-	item.cron = cron.Every(interval)
-	item.nextTime = item.nextTime.Add(interval)
-	s.jobQueue.Insert(item)
-	updated = true
-
-	return
-}
-
-// 修改任务函数
-func (s *Scheduler) UpdateJobFunc(jobmsg JobMsg, fn func()) (updated bool) {
-	if jobmsg == nil {
-		return false
-	}
-	item, ok := jobmsg.(*Job)
-	if !ok {
-		return false
-	}
-	s.pause()
-	defer s.resume()
-
-	s.jobQueue.Delete(item)
-	item.fn = fn
-	s.jobQueue.Insert(item)
-	updated = true
-
-	return
-}
+//
+//// 添加多次执行任务
+//func (s *Scheduler) AddTimesJob(
+//	name string,
+//	active bool,
+//	interval time.Duration,
+//	activeMax uint64,
+//	jobFunc func(),
+//) (job *Job, inserted bool) {
+//	if jobFunc == nil || interval.Nanoseconds() <= 0 {
+//		return
+//	}
+//	s.pause()
+//	job, inserted = s.addJob(
+//		name,
+//		time.Now().Add(interval),
+//		active,
+//		cron.Every(interval),
+//		activeMax,
+//		jobFunc,
+//	)
+//	s.resume()
+//	return
+//}
+//
+//// 修改任务名
+//func (s *Scheduler) UpdateJobName(jobmsg JobMsg, name string) (updated bool) {
+//	if jobmsg == nil || name == "" {
+//		return false
+//	}
+//	item, ok := jobmsg.(*Job)
+//	if !ok {
+//		return false
+//	}
+//	s.pause()
+//	defer s.resume()
+//
+//	s.jobQueue.Delete(item)
+//	item.name = name
+//	s.jobQueue.Insert(item)
+//	updated = true
+//
+//	return
+//}
+//
+//// 修改任务运行状态
+//func (s *Scheduler) UpdateJobActive(jobmsg JobMsg, active bool) (updated bool) {
+//	if jobmsg == nil {
+//		return false
+//	}
+//	item, ok := jobmsg.(*Job)
+//	if !ok {
+//		return false
+//	}
+//	s.pause()
+//	defer s.resume()
+//
+//	s.jobQueue.Delete(item)
+//	item.isActive = active
+//	s.jobQueue.Insert(item)
+//	updated = true
+//	return
+//}
+//
+//// 修改任务时间间隔
+//func (s *Scheduler) UpdateJobInterval(jobmsg JobMsg, interval time.Duration) (updated bool) {
+//	if jobmsg == nil || interval.Nanoseconds() <= 0 {
+//		return false
+//	}
+//	item, ok := jobmsg.(*Job)
+//	if !ok {
+//		return false
+//	}
+//	s.pause()
+//	defer s.resume()
+//
+//	s.jobQueue.Delete(item)
+//	item.cron = cron.Every(interval)
+//	item.nextTime = item.nextTime.Add(interval)
+//	s.jobQueue.Insert(item)
+//	updated = true
+//
+//	return
+//}
+//
+//// 修改任务函数
+//func (s *Scheduler) UpdateJobFunc(jobmsg JobMsg, fn func()) (updated bool) {
+//	if jobmsg == nil {
+//		return false
+//	}
+//	item, ok := jobmsg.(*Job)
+//	if !ok {
+//		return false
+//	}
+//	s.pause()
+//	defer s.resume()
+//
+//	s.jobQueue.Delete(item)
+//	item.fn = fn
+//	s.jobQueue.Insert(item)
+//	updated = true
+//
+//	return
+//}
 
 // 删除任务
 func (s *Scheduler) RmJob(job *Job) (removed bool) {
@@ -383,16 +371,7 @@ func (s *Scheduler) RmJob(job *Job) (removed bool) {
 }
 
 func (s *Scheduler) GetJobs() []*Job {
-	var jobs []*Job
-	s.jobQueue.Ascend(s.jobQueue.Min(), func(item rbtree.Item) bool {
-		i, ok := item.(*Job)
-		if !ok || i.name == "testJob" {
-			return false
-		}
-		jobs = append(jobs, i)
-		return true
-	})
-	return jobs
+	return s.store.GetJobs()
 }
 
 // Stop stop clock , and cancel all waiting jobs
