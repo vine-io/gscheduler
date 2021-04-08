@@ -65,6 +65,22 @@ func (j *Job) Less(another rbtree.Item) bool {
 	return j.id < item.id
 }
 
+func (j Job) ID() string {
+	return j.id
+}
+
+func (j Job) Name() string {
+	return j.name
+}
+
+func (j Job) LastTime() time.Time {
+	return j.lastTime
+}
+
+func (j Job) NextTime() time.Time {
+	return j.nextTime
+}
+
 func (j *Job) SetCron(cron cron.Crontab) {
 	j.cron = cron
 }
@@ -113,7 +129,7 @@ type builder struct {
 //
 //   job, err := JobBuilder().Name("duration-job").Duration(time.Second*10).Out()
 //
-//   job, err := JobBuilder().Name("once-job).Duration(time.Second*5).Times(1).Out()
+//   job, err := JobBuilder().Name("once-job").Duration(time.Second*5).Times(1).Out()
 func JobBuilder() *builder {
 	return &builder{j: &Job{
 		id:         uuid.New().String(),
