@@ -22,9 +22,10 @@ type Store interface {
 	GetJobs() []*Job
 	GetByName(string) (*Job, bool)
 	GetById(uint64) (*Job, bool)
+	Count() uint
 	Put(*Job)
 	Del(*Job)
-	Pop() (*Job, bool)
+	Min() (*Job, bool)
 }
 
 type jobStore struct {
@@ -92,6 +93,12 @@ func (s *jobStore) GetById(id uint64) (*Job, bool) {
 	return job, job != nil
 }
 
+func (s *jobStore) Count() uint {
+	s.RLock()
+	defer s.RUnlock()
+	return s.store.Len()
+}
+
 func (s *jobStore) Put(job *Job) {
 	s.Lock()
 	s.store.Insert(job)
@@ -104,7 +111,7 @@ func (s *jobStore) Del(job *Job) {
 	s.Unlock()
 }
 
-func (s *jobStore) Pop() (*Job, bool) {
+func (s *jobStore) Min() (*Job, bool) {
 	s.RLock()
 	item := s.store.Min()
 	if item == nil {
@@ -116,10 +123,6 @@ func (s *jobStore) Pop() (*Job, bool) {
 		return nil, false
 	}
 	s.RUnlock()
-
-	s.Lock()
-	s.store.Delete(job)
-	s.Unlock()
 
 	return job, true
 }

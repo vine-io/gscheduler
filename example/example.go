@@ -21,11 +21,11 @@ func main() {
 		println("job2")
 	})
 
-	fmt.Println(s.GetJobs())
+	s.AddIntervalJob("job3", true, time.Second*1, func() {
+		println("job3")
+	})
 
-	//time.Sleep(time.Second * 3)
-	//_ = j
-	//s.StopGraceful()
+	time.Sleep(time.Second * 3)
 
 	time.Sleep(time.Second * 4)
 }

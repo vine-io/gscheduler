@@ -69,7 +69,7 @@ func (s *Scheduler) Start() {
 		},
 	}
 
-	_, inserted := s.addJob(staticJob, untouchedJob.cron.Next(now), true, untouchedJob.cron, 1, untouchedJob.fn)
+	_, inserted := s.addJob(staticJob, true, untouchedJob.cron, 0, untouchedJob.fn)
 	if !inserted {
 		panic("[scheduler] internal error.Reason cannot insert job.")
 	}
@@ -83,15 +83,20 @@ func (s *Scheduler) run() {
 	var (
 		timeout time.Duration
 		job     *Job
+		ok      bool
 		timer   = newSafeTimer(_UNTOUCHED)
 	)
 	defer timer.Stop()
+
 Pause:
 	<-s.resumeChan
 	for {
-		job, _ = s.store.Pop()
-
-		timeout = job.nextTime.Sub(time.Now())
+		job, ok = s.store.Min()
+		if !ok {
+			timeout = _UNTOUCHED
+		} else {
+			timeout = job.nextTime.Sub(time.Now())
+		}
 		timer.SafeReset(timeout)
 		select {
 		case <-timer.C:
@@ -101,14 +106,16 @@ Pause:
 			if job.isActive {
 				job.start(true)
 				if job.activeMax == 0 || job.activeMax > job.activeCount {
-					job.lastTime = job.nextTime
+					s.store.Del(job)
+					job.lastTime = time.Now()
 					job.nextTime = job.cron.Next(job.lastTime)
 					s.store.Put(job)
 				} else {
 					s.removeJob(job)
 				}
 			} else {
-				job.nextTime = job.cron.Next(job.lastTime)
+				s.store.Del(job)
+				job.nextTime = job.cron.Next(time.Now())
 				s.store.Put(job)
 			}
 		case <-s.pauseChan:
@@ -134,7 +141,6 @@ func (s *Scheduler) exit() {
 
 func (s *Scheduler) addJob(
 	name string,
-	nextTime time.Time,
 	active bool,
 	cron cron.Crontab,
 	activeMax uint64,
@@ -142,18 +148,17 @@ func (s *Scheduler) addJob(
 ) (job *Job, inserted bool) {
 	s.seq++
 	s.waitJobsNum++
+	now := time.Now()
 	job = &Job{
 		id:         s.seq,
 		name:       name,
-		createTime: time.Now(),
+		createTime: now,
 		isActive:   active,
-		lastTime:   time.Now(),
-		nextTime:   nextTime,
 		cron:       cron,
+		nextTime:   cron.Next(now),
 		activeMax:  activeMax,
 		status:     Waiting,
 		fn:         fn,
-		store:      s.store,
 	}
 	s.store.Put(job)
 	inserted = true
@@ -163,12 +168,6 @@ func (s *Scheduler) addJob(
 func (s *Scheduler) removeJob(job *Job) (removed bool) {
 	s.store.Del(job)
 	s.waitJobsNum--
-
-	// job.Cancel --> rmJob -->removeJob; schedule -->removeJob
-	// it is call repeatly when Job.Cancel
-	if atomic.CompareAndSwapInt32(&job.cancelFlag, 0, 1) {
-		//job.innerCancel()
-	}
 	return
 }
 
@@ -181,17 +180,21 @@ func (s *Scheduler) rmJob(job *Job) {
 }
 
 func (s *Scheduler) cleanJobs() {
-	item, _ := s.store.Pop()
-	for item != nil {
-		item, _ = s.store.Pop()
+	for {
+		if item, _ := s.store.Min(); item != nil {
+			s.removeJob(item)
+		} else {
+			break
+		}
 	}
 }
 
 func (s *Scheduler) immediate() {
 	for {
-		if item, _ := s.store.Pop(); item != nil {
+		if item, _ := s.store.Min(); item != nil {
 			atomic.AddUint64(&s.count, 1)
 			item.start(false)
+			s.removeJob(item)
 		} else {
 			break
 		}
@@ -218,7 +221,6 @@ func (s *Scheduler) AddIntervalJob(
 	s.pause()
 	job, inserted = s.addJob(
 		name,
-		time.Now().Add(interval),
 		active,
 		cron.Every(interval),
 		0,
@@ -248,7 +250,6 @@ func (s *Scheduler) AddOnceJob(
 	s.pause()
 	job, inserted = s.addJob(
 		name,
-		time.Now().Add(interval),
 		active,
 		cron.Every(interval),
 		1,
@@ -364,9 +365,8 @@ func (s *Scheduler) AddOnceJob(
 //}
 
 // 删除任务
-func (s *Scheduler) RmJob(job *Job) (removed bool) {
-	job.Cancel()
-	removed = true
+func (s *Scheduler) RmJob(job *Job) {
+	s.rmJob(job)
 	return
 }
 
