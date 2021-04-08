@@ -1,54 +1,45 @@
 # gscheduler
 
 ## 简介
-gscheduler 是`golang`实现的一个简单的任务调度器。
-实现功能：
+
+gscheduler 是`golang`实现的一个简单的任务调度器。 实现功能：
+
 - 任务的添加
 - 任务的删除
-- 任务的时间间隔修改
-- 任务的名称修改
-- 任务的执行函数
-- 任务的信息json输出
+- 任务的修改
+- 任务的查询
 
 ## 实例
+
 ```golang
 package main
 
 import (
 	"fmt"
 	"time"
-	"github.com/xingyys/gscheduler"
+
+	"github.com/lack-io/gscheduler"
 )
 
 func main() {
 	scheduler := gscheduler.NewScheduler()
 	scheduler.Start()
 
-	// 添加循环时间
-	scheduler.AddIntervalJob("job1", true, time.Second * 1, func() {
-		fmt.Println("runing job1")
-	})
+	a := 1
 
-	// 添加一次性时间
-	scheduler.AddOnceJob("job2", true, time.Second * 1, func() {
-		fmt.Println("running once job")
-	})
+	job1, _ := gscheduler.JobBuilder().Name("job1").Duration(time.Second).Fn(func() {
+		fmt.Printf("[%s] a = %d\n", time.Now(), a)
+		a++
+	}).Out()
 
-	// 添加执行次数任务
-	v := 1
-	scheduler.AddTimesJob("job3", true, time.Second * 2, 3, func() {
-		fmt.Println("running job at time ", v)
-		v++
-	})
+	job2, _ := gscheduler.JobBuilder().Name("job2").Duration(time.Second).Fn(func() {
+		fmt.Println("job2", time.Now())
+	}).Out()
+
+	scheduler.AddJob(job1)
+	scheduler.AddJob(job2)
+
 	time.Sleep(time.Second * 10)
-	// 结束任务
-	scheduler.Stop()
 }
 ```
-
-## 感谢
-[https://github.com/alex023/clock][1]
-
-
-  [1]: https://github.com/alex023/clock
 

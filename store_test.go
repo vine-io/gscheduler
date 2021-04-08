@@ -1,6 +1,7 @@
 package gscheduler
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -17,8 +18,8 @@ var (
 
 func init() {
 	store = newJobStore()
-	job1 = &Job{id: 1, cron: cron.Every(time.Second * 1)}
-	job2 = &Job{id: 2, cron: cron.Every(time.Second * 2)}
+	job1 = &Job{id: "1", cron: cron.Every(time.Second * 1)}
+	job2 = &Job{id: "2", cron: cron.Every(time.Second * 2)}
 	store.Put(job1)
 	store.Put(job2)
 }
@@ -28,11 +29,11 @@ func Test_jobStore_Min(t *testing.T) {
 		name  string
 		store Store
 		want  *Job
-		want1 bool
+		want1 error
 	}{
-		{"TestMin-1", store, job1, true},
-		{"TestMin-2", store, job2, true},
-		{"TestMin-3", store, nil, false},
+		{"TestMin-1", store, job1, nil},
+		{"TestMin-2", store, job2, nil},
+		{"TestMin-3", store, nil, fmt.Errorf("store empty")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -62,7 +63,7 @@ func Test_jobStore_GetJobs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := tt.store
-			if got := s.GetJobs(); !reflect.DeepEqual(got, tt.want) {
+			if got, _ := s.GetJobs(); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("GetJobs() = %v, want %v", got, tt.want)
 			}
 		})
@@ -70,8 +71,8 @@ func Test_jobStore_GetJobs(t *testing.T) {
 }
 
 func Test_jobStore_GetByName(t *testing.T) {
-	aJob := &Job{id: 3, name: "aa", cron: cron.Every(time.Second * 3)}
-	bJob := &Job{id: 4, name: "bb", cron: cron.Every(time.Second * 4)}
+	aJob := &Job{id: "3", name: "aa", cron: cron.Every(time.Second * 3)}
+	bJob := &Job{id: "4", name: "bb", cron: cron.Every(time.Second * 4)}
 	store.Put(aJob)
 	store.Put(bJob)
 	tests := []struct {
@@ -79,10 +80,10 @@ func Test_jobStore_GetByName(t *testing.T) {
 		store Store
 		args  string
 		want  *Job
-		want1 bool
+		want1 error
 	}{
-		{"TestGetByName-1", store, "aa", aJob, true},
-		{"TestGetByName-2", store, "bb", bJob, true},
+		{"TestGetByName-1", store, "aa", aJob, nil},
+		{"TestGetByName-2", store, "bb", bJob, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -99,19 +100,19 @@ func Test_jobStore_GetByName(t *testing.T) {
 }
 
 func Test_jobStore_GetById(t *testing.T) {
-	aJob := &Job{id: 3, name: "aa", cron: cron.Every(time.Second * 3)}
-	bJob := &Job{id: 4, name: "bb", cron: cron.Every(time.Second * 4)}
+	aJob := &Job{id: "3", name: "aa", cron: cron.Every(time.Second * 3)}
+	bJob := &Job{id: "4", name: "bb", cron: cron.Every(time.Second * 4)}
 	store.Put(aJob)
 	store.Put(bJob)
 	tests := []struct {
 		name  string
 		store Store
-		args  uint64
+		args  string
 		want  *Job
-		want1 bool
+		want1 error
 	}{
-		{"TestGetById-1", store, 3, aJob, true},
-		{"TestGetById-2", store, 4, bJob, true},
+		{"TestGetById-1", store, "3", aJob, nil},
+		{"TestGetById-2", store, "4", bJob, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -128,7 +129,7 @@ func Test_jobStore_GetById(t *testing.T) {
 }
 
 func Test_jobStore_Put(t *testing.T) {
-	job3 := &Job{id: 4}
+	job3 := &Job{id: "4"}
 	store.Put(job3)
 	t.Log(store.Count())
 

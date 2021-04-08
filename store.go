@@ -13,23 +13,22 @@
 package gscheduler
 
 import (
-	"sync"
+	"fmt"
 
 	"github.com/lack-io/gscheduler/rbtree"
 )
 
 type Store interface {
-	GetJobs() []*Job
-	GetByName(string) (*Job, bool)
-	GetById(uint64) (*Job, bool)
+	GetJobs() ([]*Job, error)
+	GetByName(string) (*Job, error)
+	GetById(string) (*Job, error)
 	Count() uint
-	Put(*Job)
-	Del(*Job)
-	Min() (*Job, bool)
+	Put(*Job) error
+	Del(*Job) error
+	Min() (*Job, error)
 }
 
 type jobStore struct {
-	sync.RWMutex
 	store *rbtree.Rbtree
 }
 
@@ -39,30 +38,24 @@ func newJobStore() *jobStore {
 	}
 }
 
-func (s *jobStore) GetJobs() []*Job {
-	s.RLock()
-	defer s.RUnlock()
-
+func (s *jobStore) GetJobs() ([]*Job, error) {
 	jobs := make([]*Job, 0)
 	s.store.Ascend(s.store.Min(), func(item rbtree.Item) bool {
 		i, ok := item.(*Job)
-		if ok && i.name != staticJob {
+		if ok {
 			jobs = append(jobs, i)
 		}
 
 		return true
 	})
-	return jobs
+	return jobs, nil
 }
 
-func (s *jobStore) GetByName(name string) (*Job, bool) {
-	s.RLock()
-	defer s.RUnlock()
-
+func (s *jobStore) GetByName(name string) (*Job, error) {
 	var job *Job
 	s.store.Ascend(s.store.Min(), func(item rbtree.Item) bool {
 		i, ok := item.(*Job)
-		if !ok || i.name == staticJob {
+		if !ok {
 			return false
 		}
 		if i.name == name {
@@ -71,17 +64,18 @@ func (s *jobStore) GetByName(name string) (*Job, bool) {
 		}
 		return true
 	})
-	return job, job != nil
+	if job == nil {
+		return nil, fmt.Errorf("no job")
+	}
+
+	return job, nil
 }
 
-func (s *jobStore) GetById(id uint64) (*Job, bool) {
-	s.RLock()
-	defer s.RUnlock()
-
+func (s *jobStore) GetById(id string) (*Job, error) {
 	var job *Job
 	s.store.Ascend(s.store.Min(), func(item rbtree.Item) bool {
 		i, ok := item.(*Job)
-		if !ok || i.name == staticJob {
+		if !ok {
 			return false
 		}
 		if i.id == id {
@@ -90,39 +84,35 @@ func (s *jobStore) GetById(id uint64) (*Job, bool) {
 		}
 		return true
 	})
-	return job, job != nil
+	if job == nil {
+		return nil, fmt.Errorf("no job")
+	}
+	return job, nil
 }
 
 func (s *jobStore) Count() uint {
-	s.RLock()
-	defer s.RUnlock()
 	return s.store.Len()
 }
 
-func (s *jobStore) Put(job *Job) {
-	s.Lock()
+func (s *jobStore) Put(job *Job) error {
 	s.store.Insert(job)
-	s.Unlock()
+	return nil
 }
 
-func (s *jobStore) Del(job *Job) {
-	s.Lock()
+func (s *jobStore) Del(job *Job) error {
 	s.store.Delete(job)
-	s.Unlock()
+	return nil
 }
 
-func (s *jobStore) Min() (*Job, bool) {
-	s.RLock()
+func (s *jobStore) Min() (*Job, error) {
 	item := s.store.Min()
 	if item == nil {
-		return nil, false
+		return nil, fmt.Errorf("store empty")
 	}
 	job, ok := item.(*Job)
 	if !ok {
-		s.RUnlock()
-		return nil, false
+		return nil, fmt.Errorf("invalid resource")
 	}
-	s.RUnlock()
 
-	return job, true
+	return job, nil
 }

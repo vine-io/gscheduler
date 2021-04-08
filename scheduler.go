@@ -13,25 +13,30 @@
 package gscheduler
 
 import (
+	"fmt"
 	"math"
-	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/lack-io/gscheduler/cron"
 )
 
 const _UNTOUCHED = time.Duration(math.MaxInt64)
 
-var (
-	defaultScheduler *Scheduler
-	oncedo           sync.Once
-	signal           = struct{}{}
-	staticJob        = "__staticJob"
-)
+var signal = struct{}{}
 
-type Scheduler struct {
-	seq         uint64
+type Scheduler interface {
+	GetJobs() ([]*Job, error)
+	GetJob(id string) (*Job, error)
+	AddJob(job *Job) error
+	Count() uint64
+	UpdateJob(job *Job) error
+	RemoveJob(job *Job) error
+	Start()
+	Stop()
+	StopGraceful()
+	Reset()
+}
+
+type scheduler struct {
 	store       Store
 	count       uint64
 	waitJobsNum uint64
@@ -40,17 +45,8 @@ type Scheduler struct {
 	exitChan    chan struct{}
 }
 
-func Default() *Scheduler {
-	oncedo.Do(initScheduler)
-	return defaultScheduler
-}
-
-func initScheduler() {
-	defaultScheduler = NewScheduler()
-}
-
-func NewScheduler() *Scheduler {
-	s := &Scheduler{
+func NewScheduler() *scheduler {
+	s := &scheduler{
 		store:      newJobStore(),
 		pauseChan:  make(chan struct{}),
 		resumeChan: make(chan struct{}),
@@ -59,31 +55,18 @@ func NewScheduler() *Scheduler {
 	return s
 }
 
-func (s *Scheduler) Start() {
-	now := time.Now()
-	untouchedJob := Job{
-		createTime: now,
-		cron:       cron.Every(time.Duration(math.MaxInt64)),
-		fn: func() {
-			//this jobItem is untouched.
-		},
-	}
-
-	_, inserted := s.addJob(staticJob, true, untouchedJob.cron, 0, untouchedJob.fn)
-	if !inserted {
-		panic("[scheduler] internal error.Reason cannot insert job.")
-	}
+func (s *scheduler) Start() {
 	//开启守护协程
-	go s.run()
+	go s.progress()
 	s.resume()
 }
 
 // 开启任务调度器
-func (s *Scheduler) run() {
+func (s *scheduler) progress() {
 	var (
 		timeout time.Duration
 		job     *Job
-		ok      bool
+		err     error
 		timer   = newSafeTimer(_UNTOUCHED)
 	)
 	defer timer.Stop()
@@ -91,13 +74,14 @@ func (s *Scheduler) run() {
 Pause:
 	<-s.resumeChan
 	for {
-		job, ok = s.store.Min()
-		if !ok {
+		job, err = s.store.Min()
+		if err != nil {
 			timeout = _UNTOUCHED
 		} else {
 			timeout = job.nextTime.Sub(time.Now())
 		}
 		timer.SafeReset(timeout)
+
 		select {
 		case <-timer.C:
 			timer.SCR()
@@ -106,20 +90,22 @@ Pause:
 			if job.isActive {
 				job.start(true)
 				if job.activeMax == 0 || job.activeMax > job.activeCount {
-					s.store.Del(job)
+					s.removeJob(job)
 					job.lastTime = time.Now()
 					job.nextTime = job.cron.Next(job.lastTime)
-					s.store.Put(job)
+					s.addJob(job)
 				} else {
 					s.removeJob(job)
 				}
 			} else {
-				s.store.Del(job)
+				s.removeJob(job)
 				job.nextTime = job.cron.Next(time.Now())
-				s.store.Put(job)
+				s.addJob(job)
 			}
+
 		case <-s.pauseChan:
 			goto Pause
+
 		case <-s.exitChan:
 			goto Exit
 		}
@@ -127,255 +113,105 @@ Pause:
 Exit:
 }
 
-func (s *Scheduler) pause() {
+func (s *scheduler) pause() {
 	s.pauseChan <- signal
 }
 
-func (s *Scheduler) resume() {
+func (s *scheduler) resume() {
 	s.resumeChan <- signal
 }
 
-func (s *Scheduler) exit() {
+func (s *scheduler) exit() {
 	s.exitChan <- signal
 }
 
-func (s *Scheduler) addJob(
-	name string,
-	active bool,
-	cron cron.Crontab,
-	activeMax uint64,
-	fn func(),
-) (job *Job, inserted bool) {
-	s.seq++
-	s.waitJobsNum++
-	now := time.Now()
-	job = &Job{
-		id:         s.seq,
-		name:       name,
-		createTime: now,
-		isActive:   active,
-		cron:       cron,
-		nextTime:   cron.Next(now),
-		activeMax:  activeMax,
-		status:     Waiting,
-		fn:         fn,
+func (s *scheduler) addJob(job *Job) error {
+	if job.cron == nil {
+		return fmt.Errorf("must set cron")
 	}
-	s.store.Put(job)
-	inserted = true
-	return
+	if job.fn == nil {
+		job.fn = func() {}
+	}
+	job.status = Waiting
+	atomic.AddUint64(&s.waitJobsNum, 1)
+	job.nextTime = job.cron.Next(time.Now())
+	return s.store.Put(job)
 }
 
-func (s *Scheduler) removeJob(job *Job) (removed bool) {
-	s.store.Del(job)
-	s.waitJobsNum--
-	return
+func (s *scheduler) removeJob(job *Job) error {
+	err := s.store.Del(job)
+	atomic.SwapUint64(&s.waitJobsNum, s.waitJobsNum-1)
+	return err
 }
 
-func (s *Scheduler) rmJob(job *Job) {
-	s.pause()
-	defer s.resume()
-
-	s.removeJob(job)
-	return
-}
-
-func (s *Scheduler) cleanJobs() {
+func (s *scheduler) cleanJobs() {
 	for {
 		if item, _ := s.store.Min(); item != nil {
-			s.removeJob(item)
+			_ = s.removeJob(item)
 		} else {
 			break
 		}
 	}
 }
 
-func (s *Scheduler) immediate() {
+func (s *scheduler) immediate() {
 	for {
 		if item, _ := s.store.Min(); item != nil {
 			atomic.AddUint64(&s.count, 1)
 			item.start(false)
-			s.removeJob(item)
+			_ = s.removeJob(item)
 		} else {
 			break
 		}
 	}
 }
 
-// 添加循环任务
-// @name:    任务名
-// @active:    任务是否活动
-// @interval: 任务时间间隔
-// @jobFunc: 任务函数，不能为nil
-// return
-// @Job:　　 任务信息
-// @inserted: 任务是否添加成功
-func (s *Scheduler) AddIntervalJob(
-	name string,
-	active bool,
-	interval time.Duration,
-	jobFunc func(),
-) (job *Job, inserted bool) {
-	if jobFunc == nil || interval.Nanoseconds() <= 0 {
-		return
-	}
+func (s *scheduler) AddJob(job *Job) error {
 	s.pause()
-	job, inserted = s.addJob(
-		name,
-		active,
-		cron.Every(interval),
-		0,
-		jobFunc,
-	)
-	s.resume()
-	return
+	defer s.resume()
+	return s.addJob(job)
 }
 
-// 添加一次性任务
-// @name:    任务名
-// @active:    任务是否活动
-// @interval: 任务时间间隔
-// @jobFunc: 任务函数，不能为nil
-// return
-// @Job:　　 任务信息
-// @inserted: 任务是否添加成功
-func (s *Scheduler) AddOnceJob(
-	name string,
-	active bool,
-	interval time.Duration,
-	jobFunc func(),
-) (job *Job, inserted bool) {
-	if jobFunc == nil || interval.Nanoseconds() <= 0 {
-		return
-	}
+func (s *scheduler) UpdateJob(job *Job) error {
 	s.pause()
-	job, inserted = s.addJob(
-		name,
-		active,
-		cron.Every(interval),
-		1,
-		jobFunc,
-	)
-	s.resume()
-	return
+	defer s.resume()
+	if err := s.removeJob(job); err != nil {
+		return err
+	}
+	return s.addJob(job)
 }
 
-//
-//// 添加多次执行任务
-//func (s *Scheduler) AddTimesJob(
-//	name string,
-//	active bool,
-//	interval time.Duration,
-//	activeMax uint64,
-//	jobFunc func(),
-//) (job *Job, inserted bool) {
-//	if jobFunc == nil || interval.Nanoseconds() <= 0 {
-//		return
-//	}
-//	s.pause()
-//	job, inserted = s.addJob(
-//		name,
-//		time.Now().Add(interval),
-//		active,
-//		cron.Every(interval),
-//		activeMax,
-//		jobFunc,
-//	)
-//	s.resume()
-//	return
-//}
-//
-//// 修改任务名
-//func (s *Scheduler) UpdateJobName(jobmsg JobMsg, name string) (updated bool) {
-//	if jobmsg == nil || name == "" {
-//		return false
-//	}
-//	item, ok := jobmsg.(*Job)
-//	if !ok {
-//		return false
-//	}
-//	s.pause()
-//	defer s.resume()
-//
-//	s.jobQueue.Delete(item)
-//	item.name = name
-//	s.jobQueue.Insert(item)
-//	updated = true
-//
-//	return
-//}
-//
-//// 修改任务运行状态
-//func (s *Scheduler) UpdateJobActive(jobmsg JobMsg, active bool) (updated bool) {
-//	if jobmsg == nil {
-//		return false
-//	}
-//	item, ok := jobmsg.(*Job)
-//	if !ok {
-//		return false
-//	}
-//	s.pause()
-//	defer s.resume()
-//
-//	s.jobQueue.Delete(item)
-//	item.isActive = active
-//	s.jobQueue.Insert(item)
-//	updated = true
-//	return
-//}
-//
-//// 修改任务时间间隔
-//func (s *Scheduler) UpdateJobInterval(jobmsg JobMsg, interval time.Duration) (updated bool) {
-//	if jobmsg == nil || interval.Nanoseconds() <= 0 {
-//		return false
-//	}
-//	item, ok := jobmsg.(*Job)
-//	if !ok {
-//		return false
-//	}
-//	s.pause()
-//	defer s.resume()
-//
-//	s.jobQueue.Delete(item)
-//	item.cron = cron.Every(interval)
-//	item.nextTime = item.nextTime.Add(interval)
-//	s.jobQueue.Insert(item)
-//	updated = true
-//
-//	return
-//}
-//
-//// 修改任务函数
-//func (s *Scheduler) UpdateJobFunc(jobmsg JobMsg, fn func()) (updated bool) {
-//	if jobmsg == nil {
-//		return false
-//	}
-//	item, ok := jobmsg.(*Job)
-//	if !ok {
-//		return false
-//	}
-//	s.pause()
-//	defer s.resume()
-//
-//	s.jobQueue.Delete(item)
-//	item.fn = fn
-//	s.jobQueue.Insert(item)
-//	updated = true
-//
-//	return
-//}
-
-// 删除任务
-func (s *Scheduler) RmJob(job *Job) {
-	s.rmJob(job)
-	return
+func (s *scheduler) RemoveJob(job *Job) error {
+	s.pause()
+	defer s.resume()
+	return s.removeJob(job)
 }
 
-func (s *Scheduler) GetJobs() []*Job {
+func (s *scheduler) GetJobs() ([]*Job, error) {
 	return s.store.GetJobs()
 }
 
+func (s *scheduler) GetJob(id string) (*Job, error) {
+	return s.store.GetById(id)
+}
+
+// Count 已经执行的任务数。对于重复任务，会计算多次
+func (s *scheduler) Count() uint64 {
+	return atomic.LoadUint64(&s.count)
+}
+
+// 重置Clock的内部状态
+func (s *scheduler) Reset() {
+	s.exit()
+	s.count = 0
+
+	s.cleanJobs()
+	s.Start()
+	return
+}
+
 // Stop stop clock , and cancel all waiting jobs
-func (s *Scheduler) Stop() {
+func (s *scheduler) Stop() {
 	s.exit()
 
 	s.cleanJobs()
@@ -383,29 +219,8 @@ func (s *Scheduler) Stop() {
 
 // StopGracefull stop clock ,and do once every waiting job including Once\Reapeat
 // Note:对于任务队列中，即使安排执行多次或者不限次数的，也仅仅执行一次。
-func (s *Scheduler) StopGraceful() {
+func (s *scheduler) StopGraceful() {
 	s.exit()
 
 	s.immediate()
-}
-
-// Count 已经执行的任务数。对于重复任务，会计算多次
-func (s *Scheduler) Count() uint64 {
-	return atomic.LoadUint64(&s.count)
-}
-
-// 重置Clock的内部状态
-func (s *Scheduler) Reset() *Scheduler {
-	s.exit()
-	s.count = 0
-
-	s.cleanJobs()
-	s.Start()
-	return s
-}
-
-// WaitJobs get how much jobs waiting for call
-func (s *Scheduler) WaitJobs() uint64 {
-	jobs := atomic.LoadUint64(&s.waitJobsNum) - 1
-	return jobs
 }
