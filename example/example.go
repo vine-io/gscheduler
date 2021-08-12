@@ -13,7 +13,7 @@ func main() {
 
 	a := 1
 
-	job1, _ := gscheduler.JobBuilder().Name("job1").Duration(time.Second).Fn(func() {
+	job1 := gscheduler.JobBuilder().Name("job1").Duration(time.Second).Fn(func() {
 		fmt.Printf("[%s] a = %d\n", time.Now(), a)
 		a++
 	}).Out()
