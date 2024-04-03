@@ -33,7 +33,7 @@ type scheduler struct {
 	exitChan    chan struct{}
 }
 
-func NewScheduler() *scheduler {
+func NewScheduler() Scheduler {
 	s := &scheduler{
 		store:      newJobStore(),
 		pauseChan:  make(chan struct{}),
@@ -198,7 +198,7 @@ func (s *scheduler) Reset() {
 	return
 }
 
-// Stop stop clock , and cancel all waiting jobs
+// Stop stops clock , and cancel all waiting jobs
 func (s *scheduler) Stop() {
 	s.exit()
 

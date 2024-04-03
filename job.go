@@ -109,15 +109,17 @@ type builder struct {
 }
 
 // JobBuilder the builder of Job
-//  examples:
-//   c, err := cron.Parse("*/10 * * * * * *")
-//   job := JobBuilder().Name("cron-job").Spec(c).Out()
 //
-//   job := JobBuilder().Name("delay-job").Delay(time.Now().Add(time.Hour*3)).Out()
+// examples:
 //
-//   job := JobBuilder().Name("duration-job").Duration(time.Second*10).Out()
+//	c, err := cron.Parse("*/10 * * * * * *")
+//	job := JobBuilder().Id("jobid").Name("cron-job").Spec(c).Out()
 //
-//   job := JobBuilder().Name("once-job").Duration(time.Second*5).Times(1).Out()
+//	job := JobBuilder().Name("delay-job").Delay(time.Now().Add(time.Hour*3)).Out()
+//
+//	job := JobBuilder().Name("duration-job").Duration(time.Second*10).Out()
+//
+//	job := JobBuilder().Name("once-job").Duration(time.Second*5).Times(1).Out()
 func JobBuilder() *builder {
 	return &builder{j: &Job{
 		id:         uuid.New().String(),
@@ -134,52 +136,59 @@ func FromJob(job *Job) *builder {
 	}
 }
 
-// Name set the name of Job
+// Name sets the name of Job
 func (b *builder) Name(name string) *builder {
 	b.j.name = name
 	return b
 }
 
-// Duration set the interval of Job
+// Id sets the name of Job
+func (b *builder) Id(id string) *builder {
+	b.j.id = id
+	return b
+}
+
+// Duration sets the interval of Job
 func (b *builder) Duration(d time.Duration) *builder {
 	b.j.SetCron(cron.Every(d))
 	return b
 }
 
-// Spec set the crontab expression of Job
-//  */3 * * * * * * : every 3s
-//  00 30 15 * * * * : 15:30:00 every day
+// Spec sets the crontab expression of Job
+//
+//	*/3 * * * * * * : every 3s
+//	00 30 15 * * * * : 15:30:00 every day
 func (b *builder) Spec(c cron.Crontab) *builder {
 	b.j.cron = c
 	return b
 }
 
-// Delay get a delay once Job
+// Delay gets a delay once Job
 func (b *builder) Delay(t time.Time) *builder {
 	b.j.activeMax = 1
 	b.j.SetCron(cron.Every(t.Sub(time.Now())))
 	return b
 }
 
-// Silent set isActive false
+// Silent sets isActive false
 func (b *builder) Silent() *builder {
 	b.j.isActive = false
 	return b
 }
 
-// Times set the active count of Job
+// Times sets the active count of Job
 func (b *builder) Times(t uint64) *builder {
 	b.j.SetTimes(t)
 	return b
 }
 
-// Fn set the function of Job
+// Fn sets the function of Job
 func (b *builder) Fn(fn func()) *builder {
 	b.j.SetFn(fn)
 	return b
 }
 
-// Out get a Job
+// Out gets a Job
 func (b *builder) Out() *Job {
 	return b.j
 }

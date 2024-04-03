@@ -27,12 +27,12 @@ func main() {
 
 	a := 1
 
-	job1, _ := gscheduler.JobBuilder().Name("job1").Duration(time.Second).Fn(func() {
+	job1 := gscheduler.JobBuilder().Name("job1").Duration(time.Second).Fn(func() {
 		fmt.Printf("[%s] a = %d\n", time.Now(), a)
 		a++
 	}).Out()
 
-	job2, _ := gscheduler.JobBuilder().Name("job2").Duration(time.Second).Fn(func() {
+	job2 := gscheduler.JobBuilder().Name("job2").Duration(time.Second).Fn(func() {
 		fmt.Println("job2", time.Now())
 	}).Out()
 
@@ -57,7 +57,8 @@ func main() {
 ```go
 func main() {
 	// 构建一个符合正则表达式的任务
-	gscheduler.JobBuilder().Name("cron-job").Spec("*/10 * * * * * *").Out()
+	c, _ := cron.Parse("*/10 * * * * * *")
+	gscheduler.JobBuilder().Name("cron-job").Spec(c).Out()
 
 	// 构建一次性延时任务
 	gscheduler.JobBuilder().Name("delay-job").Delay(time.Now().Add(time.Hour * 3)).Out()
